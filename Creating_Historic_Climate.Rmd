@@ -1,0 +1,509 @@
+---
+title: "Anthropogenic_Climate"
+author: "Zjrobbin"
+date: "5/20/2020"
+output: html_document
+---
+
+#####################LICENSING####################################################### All code here in is distributed under an OSS License © 2022. Triad National Security, LLC. All rights reserved. This program was produced under U.S. Government contract 89233218CNA000001 for Los Alamos National Laboratory (LANL), which is operated by Triad National Security, LLC for the U.S. Department of Energy/National Nuclear Security Administration. All rights in the program are reserved by Triad National Security, LLC, and the U.S. Department of Energy/National Nuclear Security Administration. The Government is granted for itself and others acting on its behalf a nonexclusive, paid-up, irrevocable worldwide license in this material to reproduce, prepare derivative works, distribute copies to the public, perform publicly and display publicly, and to permit others to do so.
+
+And a BSD license: This program is open source under the BSD-3 License. Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2.Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. 3.Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. ########################End#########################################################
+
+IMAP-TDIA Code Base Zachary Robbins and Chonggang Xu
+
+
+## Overview: 
+
+This script calculates a minimum and maximum temperature vector for the IMAP/TDIA model that reflects the difference in monthly means between the two time periods analyzed. To do this we will first compare the PRISM monthly historic means, with the monthly means from the observed temperatures used to run the model for each of the four sites. Then we will use the monthly difference to calculate a new daily driver that removes this difference, thus creating the historic.
+Zachary Robbins 01/05/21
+
+
+```{r setup and functions, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+## Load in packages 
+library(rgdal)
+library(sp)
+library(raster)
+library(lubridate)
+
+### functions
+### This function takes the prism file (raster format)
+### anc crops it to the area of iterest (polygon -Shape),
+### then it calculates the mean and standard deviation for that site 
+
+ProcessMeanandVar<-function(Prismpath,Shape,InputFiles){
+  Prism<-raster::stack(paste0(Prismpath,InputFiles))
+  Shape_t<-spTransform(Shape,crs(Prism))
+  #
+  
+  Prism_crop<-crop(Prism,Shape_t)
+  Prism_crop<-mask(Prism_crop,Shape_t)
+  mean_vector<-cellStats(Prism_crop,stat=mean)
+  Tmean_Dataframe<-as.data.frame(cbind(Year,Month,mean_vector))
+  Tm_Mean<-aggregate(as.numeric(as.character(Tmean_Dataframe$mean_vector)),
+                     by=list(as.numeric(as.character(Tmean_Dataframe$Month))),
+                     FUN=mean)
+  Tm_Sd<-aggregate(as.numeric(as.character(Tmean_Dataframe$mean_vector)),
+                   by=list(as.numeric(as.character(Tmean_Dataframe$Month))),
+                   FUN=sd)
+  return(list(Tm_Mean$Group.1,Tm_Mean$x,Tm_Sd$x))
+}
+
+### This plots the mean and the confidence interval for a give output 
+plotter<-function(Outcome){
+  plot(Outcome[[2]],ylim=c(-5,20))
+  points(Outcome[[1]],Outcome[[2]]+(qnorm(0.975)*Outcome[[3]]/sqrt(50)),type="l")
+  points(Outcome[[1]],Outcome[[2]]-(qnorm(0.975)*Outcome[[3]]/sqrt(50)),type="l")
+}
+
+### This mergees together a Monthly mean and cacluates a new 
+# time series adjusted to the historic temperature. 
+TmaxCreateNewTemp<-function(Monthvec,delta,Modelname){
+  Merge<-cbind(Monthvec,delta)
+  colnames(Merge)<-c("Month","Delta")
+  Merge2<-cbind(WPB_Tmin$Dates,WPB_Tmin$Month,WPB_Tmax[Modelname])
+  colnames(Merge2)<-c("Date","Month",Modelname)
+  Merged<-merge(Merge,Merge2,by="Month",all.x=T)
+  Merged<-Merged[order(Merged$Date),]
+  Outputs<-Merged[2]-Merged[4]
+  return(list(Merged$Date,as.numeric(Outputs$Delta)))
+}
+### This creates a new temperature minimum drivers based off the differnce
+# in monthly means from the historic to the observed 
+
+TminCreateNewTemp<-function(Monthvec,delta,Modelname){
+  Merge<-cbind(Monthvec,delta)
+  colnames(Merge)<-c("Month","Delta")
+  Merge2<-cbind(WPB_Tmin$Dates,WPB_Tmin$Month,WPB_Tmin[Modelname])
+  colnames(Merge2)<-c("Date","Month",Modelname)
+  Merged<-merge(Merge,Merge2,by="Month",all.x=T)
+  Merged<-Merged[order(Merged$Date),]
+  Outputs<-Merged[2]-Merged[4]
+  return(list(Merged$Date,as.numeric(Outputs$Delta)))
+}
+```
+
+
+> Historical data from 
+
+> http://www.prism.oregonstate.edu/historical/
+
+> From their description "Time series datasets prior to 1981 are modeled using climatologically-aided interpolation (CAI), which uses the long-term average pattern (i.e., the 30-year normals) as first-guess of the spatial pattern of climatic conditions for a given month or day. CAI is robust to wide variations in station data density, which is necessary when modeling long time series. Data is based on monthly modeling. These datasets use whatever station networks and data sources are available for the relevant period."  
+
+
+
+
+## Maximum Temperature
+
+
+
+```{r Loading in the Temp Max Data }
+Drive<-"E:/Historic_climate/" ### This is the locaiton for the PRISM data .
+## set up the years 1895-1945
+Years<-seq(1895,1945,1)
+## Get the Temperature max files
+Tmax_Files<-list.files(paste0(Drive,"PRISM_tmax_stable_4kmM3_189501_198012_bil/"),
+           pattern="*.bil$")
+## Filter them by the Years
+InputFiles<-Tmax_Files[grep(paste(Years,collapse="|"),Tmax_Files)]
+## Get the dates, year and month. 
+split<-unlist(strsplit(InputFiles,"PRISM_tmax_stable_4kmM3_"))
+split<-split[c(F, T)]
+Datestring<-unlist(strsplit(split,"_"))
+Datestring<-Datestring[c(T,F)]
+Year=substr(Datestring,start=1,stop=4)
+Month=as.numeric(substr(Datestring,start=5,stop=6))
+## Path to the Prism Data
+Prismpath<-paste0(Drive,"PRISM_tmax_stable_4kmM3_189501_198012_bil/")
+```
+
+
+```{r, Loading in the shape files }
+### These are the shape files used in the study 
+### Load in the shape files 
+HighMed=readOGR(paste0(Drive,
+          "Inputs/Shapes/WPB/High_Med.shp"))
+HighLow=readOGR(paste0(Drive,
+          "Inputs/Shapes/WPB/High_Low.shp"))
+LowMed=readOGR(paste0(Drive,
+          "Inputs/Shapes/WPB/Low_Med.shp"))
+LowLow=readOGR(paste0(Drive,
+          "Inputs/Shapes/WPB/Low_Low.shp"))
+```
+
+```{r, Proccesing the mean and var Tmax}
+#Process the prism data for the years 1985-1945 using the shape files
+## See function structure above 
+LowLow_tmax=ProcessMeanandVar(Prismpath = Prismpath,LowLow,InputFiles = InputFiles)
+HighMed_tmax=ProcessMeanandVar(Prismpath = Prismpath,HighMed,InputFiles = InputFiles)
+HighLow_tmax=ProcessMeanandVar(Prismpath = Prismpath,HighLow,InputFiles = InputFiles)
+LowMed_tmax=ProcessMeanandVar(Prismpath = Prismpath,LowMed,InputFiles = InputFiles)
+```
+
+Looking at the historic data(1895-1945): Mean and confidence interval
+
+### Historic
+
+### Then we load in our DayMet data from 2003-2018
+
+```{r}
+WPB_Tmax<-read.csv("C:/Users/zacha/Documents/GitHub/IMAP_Python_Project/WPB_Model/WPB_Inputs/MI_Tmax_6_20.csv")
+### Aggregating together by month for figures
+WPB_Tmax$Month<-month(WPB_Tmax$Dates)
+
+Future_mean_Tmax<-aggregate(list(LowLow=WPB_Tmax$Low_LowElShape_Out,
+                            LowMed=WPB_Tmax$Low_MedElShape_Out,
+                            HighLow=WPB_Tmax$High_LowElShape_Out,
+                            HighMed=WPB_Tmax$High_MedElShape_Out),
+                   by=list(Month=as.numeric(as.character(WPB_Tmax$Month))),
+                   FUN=mean)
+
+Future_Sd<-aggregate(list(LowLow=WPB_Tmax$Low_LowElShape_Out,
+                      LowMed=WPB_Tmax$Low_MedElShape_Out,
+                      HighLow=WPB_Tmax$High_LowElShape_Out,
+                      HighMed=WPB_Tmax$High_MedElShape_Out),
+                 by=list(Month=as.numeric(as.character(WPB_Tmax$Month))),
+                 FUN=mean)
+```
+
+Here is the comparison between the monthly mean between the study domain (2003-2018), and the historic nomral (1895-1945).
+
+```{r, plotting historic versus current, fig.width=10.0,fig.height=10.0}
+
+## Plot figures
+par(mfrow=c(2,2),mar=c(5.1, 5.1, 4.1, 2.1))
+plot(LowLow_tmax[[2]],ylim=c(0,30),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Low Elevation/Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmax$LowLow,col="red",cex=1.4,pch=19)
+
+plot(LowMed_tmax[[2]],ylim=c(0,30),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Medium Elevation/Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmax$LowMed,col="red",cex=1.4,pch=19)
+
+legend(1,30,legend=c("Monthly Mean 1895-1945","Monthly Mean 2003-2018"),
+       pch=c(19,19),col=c("black","red"),cex=c(1.4,1.4))
+plot(HighLow_tmax[[2]],ylim=c(0,30),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Low Elevation/High Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmax$HighLow,col="red",cex=1.4,pch=19)
+
+plot(HighMed_tmax[[2]],ylim=c(0,30),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Medium Elevation/High Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmax$HighMed,col="red",pch=19,cex=1.4)
+
+```
+
+```{r}
+#### Looking at the differnce
+LL_tmax_delta<-Future_mean_Tmax$LowLow-LowLow_tmax[[2]]
+LM_tmax_delta<-Future_mean_Tmax$LowMed-LowMed_tmax[[2]]
+HL_tmax_delta<-Future_mean_Tmax$HighLow-HighLow_tmax[[2]]
+HM_tmax_delta<-Future_mean_Tmax$HighMed-HighMed_tmax[[2]]
+```
+
+Here is the change in temperature, all values indicate an increase in the montly mean between the study domain 
+and the historic maximum temperature 
+
+```{r,fig.width=10,fig.height=10}
+## Plotting the figure 
+par(mfrow=c(2,2),mar=c(5.1, 5.1, 4.1, 2.1))
+plot(LL_tmax_delta,ylim=c(0,3.5),bty="n",pch=19,
+     ylab="Change in Temp",xlab="Month",main="Low Elevation/Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0)
+plot(LM_tmax_delta,ylim=c(0,3.5),bty="n",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0,
+     ylab="Change in Temp",xlab="Month",main="Medium Elevation/Low Latitude")
+plot(HL_tmax_delta,ylim=c(0,3.5),bty="n",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0,
+     ylab="Change in Temp",xlab="Month",main="Low Elevatio/High Latitude")
+plot(HM_tmax_delta,ylim=c(0,3.5),bty="n",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0,
+     ylab="Change in Temp",xlab="Month",main="Medium Elevation/High Latitude")
+```
+
+## If we add the differnce to the study domain temperature, we get the following. 
+
+```{r}
+Monthvec<-HighLow_tmax[[1]]
+
+### Function to integrate the temerature difference 
+TmaxCreateNewTemp<-function(Monthvec,delta,Modelname){
+  Merge<-cbind(Monthvec,delta)
+  colnames(Merge)<-c("Month","Delta")
+  Merge2<-cbind(WPB_Tmax$Dates,WPB_Tmax$Month,WPB_Tmax[Modelname])
+  colnames(Merge2)<-c("Date","Month",Modelname)
+  Merged<-merge(Merge,Merge2,by="Month",all.x=T)
+  Merged<-Merged[order(Merged$Date),]
+  Outputs<-Merged[4]-Merged[2]
+  return(list(Merged$Date,as.numeric(Outputs[[1]])))
+}
+
+## Create new time series
+LL_tmax_out<-TmaxCreateNewTemp(Monthvec,LL_tmax_delta,"Low_LowElShape_Out")
+LM_tmax_out<-TmaxCreateNewTemp(Monthvec,LL_tmax_delta,"Low_MedElShape_Out")
+HL_tmax_out<-TmaxCreateNewTemp(Monthvec,LL_tmax_delta,"High_LowElShape_Out")
+HM_tmax_out<-TmaxCreateNewTemp(Monthvec,LL_tmax_delta,"High_MedElShape_Out")
+```
+
+
+
+
+## Minimum Temperature 
+
+```{r,Sorting temperature min files}
+### Code here is the same process as above excepct with minimum drivers 
+### Load in PRISM data
+Tmin_Files<-list.files(paste0(Drive,"PRISM_tmin_stable_4kmM3_189501_198012_bil/"),
+                       pattern="*.bil$")
+## List out hte files we will need 
+InputFiles<-Tmin_Files[grep(paste(Years,collapse="|"),Tmin_Files)]
+split<-unlist(strsplit(InputFiles,"PRISM_tmin_stable_4kmM3_"))
+split<-split[c(F, T)]
+Datestring<-unlist(strsplit(split,"_"))
+Datestring<-Datestring[c(T,F)]
+Year=substr(Datestring,start=1,stop=4)
+Month=as.numeric(substr(Datestring,start=5,stop=6))
+### Folder with PRISM data 
+Prismpath<-paste0(Drive,"PRISM_tmin_stable_4kmM3_189501_198012_bil/")
+```
+
+```{r, Proccessing T-Min}
+### Processing mean and min 
+LowLow_tmin=ProcessMeanandVar(Prismpath = Prismpath,LowLow,InputFiles = InputFiles)
+HighMed_tmin=ProcessMeanandVar(Prismpath = Prismpath,HighMed,InputFiles = InputFiles)
+HighLow_tmin=ProcessMeanandVar(Prismpath = Prismpath,HighLow,InputFiles = InputFiles)
+LowMed_tmin=ProcessMeanandVar(Prismpath = Prismpath,LowMed,InputFiles = InputFiles)
+```
+
+
+Proccessing temperature from 2003-2018
+
+```{r}
+### Loading in our DAYMET driver 
+WPB_Tmin<-read.csv("C:/Users/zacha/Documents/GitHub/IMAP_Python_Project/WPB_Model/WPB_Inputs/MI_Tmin_6_20.csv")
+head(WPB_Tmin)
+WPB_Tmin$Month<-month(WPB_Tmin$Dates)
+### Get monthly means and sd
+Future_mean_Tmin<-aggregate(list(LowLow=WPB_Tmin$Low_LowElShape_Out,
+                            LowMed=WPB_Tmin$Low_MedElShape_Out,
+                            HighLow=WPB_Tmin$High_LowElShape_Out,
+                            HighMed=WPB_Tmin$High_MedElShape_Out),                                             by=list(Month=as.numeric(as.character(WPB_Tmin$Month))),
+                       FUN=mean)
+
+Future_Sd<-aggregate(list(LowLow=WPB_Tmin$Low_LowElShape_Out,
+                          LowMed=WPB_Tmin$Low_MedElShape_Out,
+                          HighLow=WPB_Tmin$High_LowElShape_Out,
+                          HighMed=WPB_Tmin$High_MedElShape_Out),
+                     by=list(Month=as.numeric(as.character(WPB_Tmin$Month))),
+                     FUN=mean)
+```
+
+
+Here is the comparison between the monthly mean between the study domain (2003-2018), and the historic nomral (1895-1945).
+
+```{r,Tmin Past and future, fig.width=10.0,fig.height=10.0}
+
+### Plotting function 
+par(mfrow=c(2,2),mar=c(5.1, 5.1, 4.1, 2.1))
+plot(LowLow_tmin[[2]],ylim=c(-15,15),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Low Elevation Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmin$LowLow,col="red",cex=1.4,pch=19)
+
+plot(LowMed_tmin[[2]],ylim=c(-15,15),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Medium Elevation Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmin$LowMed,col="red",cex=1.4,pch=19)
+legend(1,30,legend=c("Monthly Mean 1895-1945","Monthly Mean 2003-2018"),
+       pch=c(19,19),col=c("black","red"),cex=c(1.4,1.4))
+plot(HighLow_tmin[[2]],ylim=c(-15,15),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Low Elevation High Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmin$HighLow,col="red",cex=1.4,pch=19)
+
+plot(HighMed_tmin[[2]],ylim=c(-15,15),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Medium Elevation High Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmin$HighMed,col="red",pch=19,cex=1.4)
+
+```
+
+
+```{r}
+#### Looking at the differnce
+LL_tmin_delta<-Future_mean_Tmin$LowLow-LowLow_tmin[[2]]
+LM_tmin_delta<-Future_mean_Tmin$LowMed-LowMed_tmin[[2]]
+HL_tmin_delta<-Future_mean_Tmin$HighLow-HighLow_tmin[[2]]
+HM_tmin_delta<-Future_mean_Tmin$HighMed-HighMed_tmin[[2]]
+```
+
+
+
+
+```{r,fig.width=10,fig.height=10}
+## Plotting the difference
+par(mfrow=c(2,2),mar=c(5.1, 5.1, 4.1, 2.1))
+plot(LL_tmin_delta,ylim=c(0,3.5),bty="n",pch=19,
+     ylab="Change in Temp",xlab="Month",main="Low Elevation Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+plot(LM_tmin_delta,ylim=c(0,3.5),bty="n",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0,
+     ylab="Change in Temp",xlab="Month",main="Medium Elevation Low Latitude",)
+plot(HL_tmin_delta,ylim=c(0,3.5),bty="n",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0,
+     ylab="Change in Temp",xlab="Month",main="Low Elevation High Latitude")
+plot(HM_tmin_delta,ylim=c(0,3.5),bty="n",pch=19,cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0,
+     ylab="Change in Temp",xlab="Month",main="Medium Elevation High Latitude")
+```
+
+```{r}
+
+### Creating a vector adjusted for differnece
+Modelname="Low_LowElShape_Out"
+Monthvec<-HighMed_tmin[[1]]
+
+TminCreateNewTemp<-function(Monthvec,delta,Modelname){
+  Merge<-cbind(Monthvec,delta)
+  colnames(Merge)<-c("Month","Delta")
+  Merge2<-cbind(WPB_Tmin$Dates,WPB_Tmin$Month,WPB_Tmin[Modelname])
+  colnames(Merge2)<-c("Date","Month",Modelname)
+  Merged<-merge(Merge,Merge2,by="Month",all.x=T)
+  Merged<-Merged[order(Merged$Date),]
+  Outputs<-Merged[4]-Merged[2]
+  return(list(Merged$Date,as.numeric(Outputs[[1]])))
+}
+
+LL_tmin_out<-TminCreateNewTemp(Monthvec,LL_tmin_delta,"Low_LowElShape_Out")
+LM_tmin_out<-TminCreateNewTemp(Monthvec,LM_tmin_delta,"Low_MedElShape_Out")
+HL_tmin_out<-TminCreateNewTemp(Monthvec,HL_tmin_delta,"High_LowElShape_Out")
+HM_tmin_out<-TminCreateNewTemp(Monthvec,HM_tmin_delta,"High_MedElShape_Out")
+
+```
+
+Here is the adjusted minimum climate driver. 
+
+```{r,fig.height=10.0,fig.width=10.0}
+## Plotting the new climate driver
+# Dates<-seq(as.Date("2001/10/5"), as.Date("2017/12/31"), "day")
+# 
+# par(mfrow=c(2,2),mar=c(5.1, 5.1, 4.1, 2.1))
+# plot(as.Date(Dates),LL_tmin_out[[2]],ylim=c(-15,20),xlim=c(Dates[1000],Dates[5000]),ylab="Temp  (\u00B0C)",main="Low Elevation Low Latitude",xlab="Date",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0)
+# points(as.Date(Dates),WPB_Tmin$Low_LowElShape_Out,col=adjustcolor( "red", alpha.f = 0.2),pch=19)
+# 
+# plot(as.Date(Dates),LM_tmin_out[[2]],ylim=c(-15,20),xlim=c(Dates[3000],Dates[5000]),ylab="Temp  (\u00B0C)",main="Medium Elevation Low Latitude",xlab="Date",cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0)
+# points(as.Date(Dates),WPB_Tmin$Low_MedElShape_Out,col=adjustcolor( "red", alpha.f = 0.2),pch=19)
+# 
+# plot(as.Date(Dates),HL_tmin_out[[2]],ylim=c(-15,20),xlim=c(Dates[3000],Dates[5000]),ylab="Temp  (\u00B0C)",main="Low Elevation High Latitude",xlab="Date",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0)
+# points(as.Date(Dates),WPB_Tmin$High_LowElShape_Out,col=adjustcolor( "red", alpha.f = 0.2),pch=19)
+# 
+# plot(as.Date(Dates),HM_tmin_out[[2]],ylim=c(-15,20),xlim=c(Dates[3000],Dates[5000]),ylab="Temp  (\u00B0C)",main="Medium Elevation High Latitude",xlab="Date",cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0)
+# points(as.Date(Dates),WPB_Tmin$High_MedElShape_Out,col=adjustcolor( "red", alpha.f = 0.2),pch=19)
+# legend(Dates[3000],20,legend=c("Historic-Adjusted Climate","Modern Climate Driver"),
+#        pch=c(19,19),col=c("black","red"),cex=c(1.4,1.4))
+```
+
+
+
+
+### T-Means
+
+The means are not used in the model, but are descriptive and used to show the difference between the two climate drivers. 
+
+```{r,fig.width=10.0,fig.height=10.0}
+#### Looking at the differnce
+LM_tmean_delta<-((Future_mean_Tmin$LowMed+Future_mean_Tmax$LowMed)/2) -((LowMed_tmax[[2]]+LowMed_tmin[[2]])/2)
+LL_tmean_delta<-((Future_mean_Tmin$LowLow+Future_mean_Tmax$LowLow)/2) -((LowLow_tmax[[2]]+LowLow_tmin[[2]])/2)
+HM_tmean_delta<-((Future_mean_Tmin$HighLow+Future_mean_Tmax$HighLow)/2) -((HighLow_tmax[[2]]+HighLow_tmin[[2]])/2)
+HL_tmean_delta<-((Future_mean_Tmin$HighMed+Future_mean_Tmax$HighMed)/2) -((HighMed_tmax[[2]]+HighMed_tmin[[2]])/2)
+
+par(mfrow=c(2,2),mar=c(5.1, 5.1, 4.1, 2.1))
+plot(LL_tmean_delta,ylim=c(0,3.5),bty="n",pch=19,
+     ylab="Change in Temp",xlab="Month",main="Low Elevation Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0)
+plot(LM_tmean_delta,ylim=c(0,3.5),bty="n",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0,
+     ylab="Change in Temp",xlab="Month",main="Medium Elevation Low Latitude")
+plot(HL_tmean_delta,ylim=c(0,3.5),bty="n",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0,
+     ylab="Change in Temp",xlab="Month",main="Low Elevation High Latitude")
+plot(HM_tmean_delta,ylim=c(0,3.5),bty="n",pch=19,cex.lab=2.0,cex.axis=2.0,cex=2.0,cex.main=2.0,
+     ylab="Change in Temp",xlab="Month",main="Medium Elevation High Latitude")
+```
+
+
+```{r}
+par(mfrow=c(2,2),mar=c(5.1, 5.1, 4.1, 2.1))
+plot(LowLow_tmin[[2]],ylim=c(-15,15),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Low Elevation Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmin$LowLow,col="red",cex=1.4,pch=19)
+
+plot(LowMed_tmin[[2]],ylim=c(-15,15),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Medium Elevation Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmin$LowMed,col="red",cex=1.4,pch=19)
+legend(1,30,legend=c("Monthly Mean 1895-1945","Monthly Mean 2003-2018"),
+       pch=c(19,19),col=c("black","red"),cex=c(1.4,1.4))
+plot(HighLow_tmin[[2]],ylim=c(-15,15),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Low Elevation High Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(Future_mean_Tmin$HighLow,col="red",cex=1.4,pch=19)
+
+```
+
+
+```{r,fig.width=10.0,fig.height=10.0}
+
+par(mfrow=c(2,2),mar=c(5.1, 5.1, 4.1, 2.1))
+plot(((LowLow_tmax[[2]]+LowLow_tmin[[2]])/2),ylim=c(0,35),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Low Elevation Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points((Future_mean_Tmin$LowLow+Future_mean_Tmax$LowLow)/2,col="red",cex=1.4,pch=19)
+legend(1,35,legend=c("Monthly Mean 1895-1945","Monthly Mean 2001-2018"),
+       pch=c(19,19),col=c("black","red"),cex=c(1.4,1.4))
+plot(((LowMed_tmax[[2]]+LowMed_tmin[[2]])/2),ylim=c(0,35),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Medium Elevation Low Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(((Future_mean_Tmin$LowMed+Future_mean_Tmax$LowMed)/2),col="red",cex=1.4,pch=19)
+
+plot(((HighLow_tmax[[2]]+HighLow_tmin[[2]])/2),ylim=c(0,35),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Low Elevation High Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points((Future_mean_Tmin$HighLow+Future_mean_Tmax$HighLow)/2,col="red",cex=1.4,pch=19)
+plot(((HighMed_tmax[[2]]+HighMed_tmin[[2]])/2),ylim=c(0,35),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Medium Elevation High Latitude",
+     cex.lab=2.0,cex.axis=2.0,cex=1.4,cex.main=2.0)
+points(((Future_mean_Tmin$HighMed+Future_mean_Tmax$HighMed)/2),col="red",cex=1.4,pch=19)
+```
+
+
+
+
+```{r,fig.width=10.0,fig.height=10.0}
+MeanestOne<-(((LowLow_tmax[[2]]+LowLow_tmin[[2]])/2)+((LowMed_tmax[[2]]+LowMed_tmin[[2]])/2)+((HighLow_tmax[[2]]+HighLow_tmin[[2]])/2)+((HighMed_tmax[[2]]+HighMed_tmin[[2]])/2))/4
+
+MeanestHistory<-(((Future_mean_Tmin$LowLow+Future_mean_Tmax$LowLow)/2)+((Future_mean_Tmin$LowMed+Future_mean_Tmax$LowMed)/2)+((Future_mean_Tmin$HighLow+Future_mean_Tmax$HighLow)/2)+((Future_mean_Tmin$HighMed+Future_mean_Tmax$HighMed)/2))/4
+par(mar=c(5.1, 5.1, 4.1, 2.1))
+plot(MeanestOne,ylim=c(0,25),bty="n",pch=19,
+     ylab="Temp  (\u00B0C)",xlab="Month",main="Mean Temperature",
+     cex.lab=2.0,cex.axis=2.0,cex=2.4,cex.main=2.0)
+points(MeanestHistory,col="red",cex=2.4,pch=19)
+legend(1,20,legend=c("Monthly Mean 1895-1945","Monthly Mean 2003-2018"),
+       pch=c(19,19),col=c("black","red"),cex=c(1.4,1.4))
+```
+
+
+
+Lastly we formulate these two data sets into two .csvs for running within the model. 
+ 
+```{r}
+Tmin_Hist_Out<-data.frame(Dates=LL_tmin_out[[1]],LowerLow=LL_tmin_out[[2]],LowerMed=LM_tmin_out[[2]],
+                          UpperLow=HL_tmin_out[[2]],UpperMed=HM_tmin_out[[2]])
+                          
+#write.csv(Tmin_Hist_Out,"Tmin_Historic.csv")
+
+Tmax_Hist_Out<-data.frame(Dates=LL_tmax_out[[1]],LowerLow=LL_tmax_out[[2]],
+                          LowerMed=LM_tmax_out[[2]],
+                          UpperLow=HL_tmax_out[[2]],UpperMed=HM_tmax_out[[2]])
+#write.csv(Tmax_Hist_Out,"Tmax_Historic.csv")
+```
+

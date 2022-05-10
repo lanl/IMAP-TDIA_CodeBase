@@ -1,0 +1,621 @@
+---
+title: "WPB Drought"
+author: "Zjrobbin"
+date: "6/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T)
+```
+
+
+#####################LICENSING####################################################### 
+
+All code here in is distributed under an OSS License © 2022. Triad National Security, LLC. All rights reserved. This program was produced under U.S. Government contract 89233218CNA000001 for Los Alamos National Laboratory (LANL), which is operated by Triad National Security, LLC for the U.S. Department of Energy/National Nuclear Security Administration. All rights in the program are reserved by Triad National Security, LLC, and the U.S. Department of Energy/National Nuclear Security Administration. The Government is granted for itself and others acting on its behalf a nonexclusive, paid-up, irrevocable worldwide license in this material to reproduce, prepare derivative works, distribute copies to the public, perform publicly and display publicly, and to permit others to do so.
+
+And a BSD license: This program is open source under the BSD-3 License. Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 2.Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. 3.Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. ########################End#########################################################
+
+IMAP-TDIA Code Base Zachary Robbins and Chonggang Xu
+
+
+### Comparing_Drought_Drivers.RMD###### 
+This script calculates the Percipitation-Evapotranspirtion, Standard Precipitation Index, and Palmers Drought Severity Index drought drivers that could be used within the model for the four sites we modeled. It also compares those drivers to the mortality experienced by the trees for each year and calculates an R2. 
+
+```{r Setting up Data }
+
+## This file takes the ET and PPT and creates a delta. At this point I am not sure which measure we are using by the defualt now 
+
+
+
+
+## is to take a five year mean for ET and PPT and calculate the cumuluative((ET-PPT)-mean(ET5-PPT5))
+##Plotter
+library(RColorBrewer)
+library(rcarbon)
+library(RcppRoll)
+library(dplyr)
+library(zoo)
+library(lubridate)
+ff<-function(x){
+  return(as.numeric(as.character(x)))
+}
+#display.brewer.all()
+Pal_1<-brewer.pal(9,"Set3")
+###REad ET 
+ET<-read.csv("C:/Users/zacha/Documents/GitHub/IMAP_Python_Project/WPB_Model/WPB_Inputs/WPB_ET_1_24.csv")
+colnames(ET)[2]<-"Dates"
+ET$Dates<-as.Date(ET$Dates,tryFormats = ("%Y-%m-%d"))
+
+
+## Set a date list so we have continous dates 
+Dates_Sub=data.frame(Dates=seq(as.Date("2001-01-01"),as.Date("2018-12-31"),1))
+Dates_Sub<-as.data.frame(Dates_Sub)
+Dates_Sub$Month<-month(Dates_Sub$Dates)
+Dates_Sub$Day<-day(Dates_Sub$Date)
+Dates_Sub$Year<-year(Dates_Sub$Dates)
+DatesNoLeap<-Dates_Sub[!(Dates_Sub$Month == 2 & Dates_Sub$Day == 29),]
+
+
+
+#### Spread ET on continous. 
+Continous<-merge(DatesNoLeap,ET,by="Dates",all.x=TRUE)
+Continous<-Continous[,c(-2,-3,-4)]
+Continous$Low_LowElShape_Out<-ff(Continous$Low_LowElShape_Out)
+Continous$Low_MedElShape_Out<-ff(Continous$Low_MedElShape_Out)
+Continous$Low_HighElShape_Out<-ff(Continous$Low_HighElShape_Out)
+Continous$High_LowElShape_Out<-ff(Continous$High_LowElShape_Out)
+Continous$High_MedElShape_Out<-ff(Continous$High_MedElShape_Out)  
+Continous$High_HighElShape_Out<-ff(Continous$High_HighElShape_Out)  
+Continous[is.na(Continous)]<-0.0
+Continous<-Continous[,-2]
+#boxplot(Continous[-1])
+
+
+
+
+Dates=data.frame(Dates=seq(as.Date("2001-01-01"),as.Date("2018-01-01"),1))
+# This is a function to smooth the 8 day measurement across the 8 days
+RunET<-runMean(ET,n=8)
+
+PPT_in<-read.csv("C:/Users/zacha/Documents/GitHub/IMAP_Python_Project/WPB_Model/WPB_Inputs/WPB_Prcp_1_14.csv")
+colnames(PPT_in)<-c(paste0(colnames(PPT_in),"PRCP"))
+colnames(PPT_in)[2]<-"Dates"
+PPT_in<-PPT_in[-1]
+PPT_in$Dates<-as.Date(PPT_in$Dates)
+
+Dates<-as.Date(seq(
+  from=as.POSIXct("1997-01-01 0:00", tz="UTC"),
+  to=as.POSIXct("2018-01-01 0:00", tz="UTC"),
+  by="day"
+) )
+
+
+
+PPT_sub<-PPT_in[PPT_in$Dates %in% as.Date(Dates),]
+### Merge the dates 
+Delta_df<-merge(Continous,PPT_sub,by="Dates",all.x=TRUE)
+
+### Look at the difference between ppt and et for each day. 
+Delta_df$Low_LowElDelta<-Delta_df$Low_LowElShape_OutPRCP-Delta_df$Low_LowElShape_Out
+Delta_df$Low_LowElDelta[is.na(Delta_df$Low_LowElDelta)]<-0
+#Delta_df$Low_LowElDelta[is.na(Delta_df$Low_LowElDelta)]
+Delta_df$Low_MedElDelta<-Delta_df$Low_MedElShape_OutPRCP-Delta_df$Low_MedElShape_Out
+Delta_df$Low_MedElDelta[is.na(Delta_df$Low_MedElDelta)]<-0
+Delta_df$Low_HighElDelta<-Delta_df$Low_HighElShape_OutPRCP-Delta_df$Low_HighElShape_Out
+Delta_df$Low_HighElDelta[is.na(Delta_df$Low_HighElDelta)]<-0
+Delta_df$High_LowElDelta<-Delta_df$High_LowElShape_OutPRCP-Delta_df$High_LowElShape_Out
+Delta_df$High_LowElDelta[is.na(Delta_df$High_LowElDelta)]<-0
+Delta_df$High_MedElDelta<-Delta_df$High_MedElShape_OutPRCP-Delta_df$High_MedElShape_Out
+Delta_df$High_MedElDelta[is.na(Delta_df$High_MedElDelta)]<-0
+Delta_df$High_HighElDelta<-Delta_df$High_HighElShape_OutPRCP-Delta_df$High_HighElShape_Out
+Delta_df$High_HighElDelta[is.na(Delta_df$High_HighElDelta)]<-0
+
+Dates_2<-as.Date(seq(
+  from=as.POSIXct("2001-01-01 0:00", tz="UTC"),
+  to=as.POSIXct("2018-01-01 0:00", tz="UTC"),
+  by="day"
+) )
+
+Delta_df_sub<-Delta_df[Delta_df$Dates %in% Dates_2,]
+Deltas<-Delta_df_sub[,c(14:19)]
+
+
+Mortality<-read.csv("C:/Users/zacha/Documents/GitHub/IMAP_Python_Project/WPB_Model/WPB_Inputs/WPBPercentMortality.csv")
+Mortality<-Mortality[,-1]
+Mortality<-Mortality[-17,]
+colnames(Mortality)<-c("Year","AllPerc","SmallPerc","LargePerc")
+Mortality$Dates<-seq(as.Date("2003-07-02"),as.Date("2018-07-02"),by="year")
+Mortality<-Mortality[Mortality$Year %in% seq(2008,2017),]
+
+
+```
+
+
+
+```{r}
+Mortality2<-read.csv("C:/Users/zacha/Documents/GitHub/IMAP_Python_Project/WPB_Model/WPB_Inputs/WPB_Trees_6_20.csv")
+
+MortalityStack<-Mortality2[5:17]+Mortality2[18:30]
+MortalityStack<-cbind((Mortality2[3]+Mortality2[4]),MortalityStack)
+MortalityStack<-as.data.frame(t(MortalityStack))
+colnames(MortalityStack)<-c("HE_LL_m","LE_LL_m","HE_HL_m","LE_HL_m")
+MortalityStack$Year<-seq(2005,2018)
+dfPerc<-NULL
+for(i in 2: length(MortalityStack$Year)){
+
+  rowPerc<-(MortalityStack[i-1,1:4]-MortalityStack[i,1:4])/MortalityStack[i-1,1:4]
+  rowPerc<-cbind(MortalityStack$Year[i],rowPerc)
+  dfPerc<-rbind(rowPerc,dfPerc)
+}
+
+colnames(dfPerc)[1]<-"Year"
+dfPerc<-dfPerc[order(dfPerc[,1]),]
+
+```
+
+### Calculating R2 for P-ET
+
+
+```{r}
+Merged<-merge(Delta_df,Mortality,all.x=T,by="Dates")
+Merged<-Merged[Merged$Dates>as.Date("2001-01-01"),]
+
+Merged$LL[1460:6569]<-roll_sum(Merged$Low_LowElDelta-mean(Merged$Low_LowElDelta),1460)
+Merged$LM[1460:6569]<-roll_sum(Merged$Low_MedElDelta-mean(Merged$Low_MedElDelta),1460)
+Merged$HM[1460:6569]<-roll_sum(Merged$High_LowElDelta-mean(Merged$High_LowElDelta),1460)
+Merged$HH[1460:6569]<-roll_sum(Merged$High_HighElDelta-mean(Merged$High_HighElDelta),1460)
+
+
+byyear <- aggregate(cbind(LL, LM,HM,HH)~year(as.Date(Dates)),
+                    data=Merged,FUN=mean)
+
+colnames(byyear)[1]<-c("Year")
+Merged_byyear<-merge(byyear,Mortality,all.x=T,by="Year")
+
+head(Merged_byyear)
+Merged_byyear$mean<-rowMeans(Merged_byyear[2:5])
+
+summary(lm(Merged_byyear$AllPerc[5:15]~Merged_byyear$mean[5:15]))
+
+byyear2<-byyear[2:14,]
+Oneclim<-c(byyear2$LM,byyear2$LL,byyear2$HH,byyear2$HM)
+OneMortality<-c(dfPerc$HE_LL_m,dfPerc$LE_LL_m,dfPerc$HE_HL_m,dfPerc$LE_HL_m)
+summary(lm(Oneclim~OneMortality))
+
+print(byyear2$LM)
+#print(dfPerc$HE_LL_m)
+```
+
+
+
+
+
+```{r}
+Delta_df_sub<-Delta_df[Delta_df$Dates %in% Dates_2,]
+Deltas<-Delta_df_sub[,c(14:19)]
+
+```
+
+
+### Palmers Drought Severity Index 
+
+https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_PDSI
+
+This is from the same group that produced MACA they have Palmers drought severity index going back ot 1979 on a thrice
+monthly timestep (1,10,20th)
+From the description 
+
+"The Palmer Drought Severity Index dataset provides high spatial resolution (~4-km) thrice-monthly estimates of this widely used measure of integrated water supply and demand anomalies across the contiguous United States from 1979-present. The PDSI is calculated using precipitation and potential evapotranspiration derived from the gridded meteorological dataset of Abatzoglou (2013).
+
+Potential evapotranspiration is computed using the Penman-Montieth equation for a reference grass surface. Available soil water holding capacity in the top 2.5m of the soil was derived from the STATSGO soils database and used in the computations. Whereas PDSI has typically been computed on monthly timescales, we compute these data three-times a month to provide more timely updates. Due to the spin-up of PDSI calculations, data for the first year of record should be used sparingly.
+
+This dataset contains provisional products that are replaced with updated versions when the complete source data become available. Products can be distinguished by the value of the 'status' property. At first, assets are ingested with status='early'. After several days, they are replaced by assets with status='provisional'. After about 2 months, they are replaced by the final assets with status='permanent'."
+
+I took the average bounded by the shape file for each of the WPB Locations 
+
+
+
+```{r,fig.width=20.0,fig.height=10.0,eval=FALSE}
+
+HE_HL_pal<-read.csv("C:/Users/zacha/Desktop/WPB_Palmers/WPB_Palmers/HE_HL_WPB_Table.csv")
+colnames(HE_HL_pal)<-c("Dates","HE_HL_pal")
+HE_LL_pal<-read.csv("C:/Users/zacha/Desktop/WPB_Palmers/WPB_Palmers/HE_LL_WPB_Table.csv")
+colnames(HE_LL_pal)<-c("Dates","HE_LL_pal")
+LE_HL_pal<-read.csv("C:/Users/zacha/Desktop/WPB_Palmers/WPB_Palmers/LE_HL_WPB_Table.csv")
+colnames(LE_HL_pal)<-c("Dates","LE_HL_pal")
+LE_LL_pal<-read.csv("C:/Users/zacha/Desktop/WPB_Palmers/WPB_Palmers/LE_LL_WPB_Table.csv")
+colnames(LE_LL_pal)<-c("Dates","LE_LL_pal")
+m1<-merge(HE_HL_pal,HE_LL_pal,by="Dates",all.x=T)
+m2<-merge(m1,LE_HL_pal,by="Dates",all.x=T)
+m3<-merge(m2,LE_LL_pal,by="Dates",all.x=T)
+
+Mortality<-read.csv("C:/Users/zacha/Documents/GitHub/IMAP_Python_Project/WPB_Model/WPB_Inputs/WPBPercentMortality.csv")
+Mortality<-Mortality[,-1]
+Mortality<-Mortality[-17,]
+colnames(Mortality)<-c("Year","AllPerc","SmallPerc","LargePerc")
+Mortality$Dates<-seq(as.Date("2003-07-10"),as.Date("2018-07-10"),by="year")
+Mortality<-Mortality[Mortality$Year %in% seq(2008,2017),]
+
+m3$Dates<-as.Date(m3$Dates)
+m3<-m3[order(m3$Dates),]
+Merged<-merge(m3,Mortality,all.x=T,by="Dates")
+Merged<-Merged[Merged$Dates>"2003-01-01",]
+Dates<-data.frame(Dates=seq(as.Date("2003-01-01"),as.Date("2018-01-01"),by="day"))
+
+M4<-merge(Dates,m3,by="Dates",all.x=T)
+
+#### Linear interpolation
+Interpol<-data.frame(Dates=seq(M4$Dates[1],M4$Dates[nrow(M4)],by=1))%>%
+  full_join(M4,by="Dates")%>%
+  mutate(HE_HL=na.approx(HE_HL_pal),HE_LL=na.approx(HE_LL_pal),
+         LE_HL=na.approx(LE_HL_pal),LE_LL=na.approx(LE_LL_pal))
+Interpol<-Interpol[,c(-2,-3,-4,-5)]
+
+```
+
+### Interpolated Palmers
+
+```{r,fig.width=20.0,fig.height=10.0}
+
+Interpol<-read.csv("C:/Users/zacha/Documents/GitHub/IMAP_Python_Project/WPB_Model/WPB_Inputs/WPB_Palmers.csv")
+Interpol$Dates<-as.Date(Interpol$Dates,tryFormats = c("%m/%d/%Y"))
+#?as.Date
+Merged_PDSI<-merge(Interpol,Mortality,all.x=T,by="Dates")
+Merged_PDSI<-Merged_PDSI[Merged_PDSI$Dates>as.Date("2005-01-01"),]
+```
+
+### Calculating the R2 for PDSI 
+
+```{r}
+byyear <- aggregate(cbind(LE_LL, LE_HL,HE_LL,HE_HL)~year(as.Date(Dates)),
+             data=Interpol,FUN=mean)
+#head(byyear)
+colnames(byyear)[1]<-c("Year")
+
+Merged_byyear<-merge(byyear,Mortality,all.x=T,by="Year")
+#head(Merged_byyear)
+Merged_byyear$mean<-rowMeans(Merged_byyear[2:5])
+#plot(Merged_byyear$mean)
+summary(lm(Merged_byyear$AllPerc~Merged_byyear$mean))
+
+
+#### Indivdual years
+byyear2<-byyear[4:16,]
+Oneclim<-c(byyear2$HE_LL,byyear2$LE_LL,byyear2$HE_HL,byyear2$LE_HL)
+OneMortality<-c(dfPerc$HE_LL_m,dfPerc$LE_LL_m,dfPerc$HE_HL_m,dfPerc$LE_HL_m)
+summary(lm(OneMortality~Oneclim))
+
+#plot(OneMortality~Oneclim)
+
+```
+
+
+## SPI (Four Year)
+Standardize precipitation index is $\frac{Precip-Mean Hist Precip}{(SD of Hist Precip)}$
+
+From Gavin D. Madakumbura and Michael L. Goulden's manuscript. They tested several drought indices for the area and settled on 
+a 4 year lg SPI. This only takes precip as an input. 
+
+```{r,fig.width=20.0,fig.height=10.0}
+PPT_in<-read.csv("C:/Users/zacha/Documents/GitHub/IMAP_Python_Project/WPB_Model/WPB_Inputs/WPB_Prcp_1_14.csv")
+colnames(PPT_in)<-c(paste0(colnames(PPT_in),"PRCP"))
+colnames(PPT_in)[2]<-"Dates"
+PPT_in<-PPT_in[-1]
+PPT_in$Dates<-as.Date(PPT_in$Dates)
+
+Dates<-as.Date(seq(
+  from=as.POSIXct("1999-01-01 0:00", tz="UTC"),
+  to=as.POSIXct("2018-01-01 0:00", tz="UTC"),
+  by="day"
+) )
+
+
+
+Dates2<-as.Date(seq(
+  from=as.POSIXct("1995-01-01 0:00", tz="UTC"),
+  to=as.POSIXct("2005-01-01 0:00", tz="UTC"),
+  by="day"
+) )## Was 2012
+
+PPT_sub<-PPT_in[PPT_in$Dates %in% as.Date(Dates2),]
+PPT_sub<-PPT_sub[order(PPT_sub$Dates),]
+LE_LL_Roll<-roll_sum(PPT_sub$Low_LowElShape_OutPRCP,1460)
+LE_LL_Mean<-mean(LE_LL_Roll)
+LE_LL_SD<-sd(LE_LL_Roll)
+ME_LL_Roll<-roll_sum(PPT_sub$Low_MedElShape_OutPRCP,1460)
+ME_LL_Mean<-mean(ME_LL_Roll)
+ME_LL_SD<-sd(ME_LL_Roll)     
+LE_HL_Roll<-roll_sum(PPT_sub$High_LowElShape_OutPRCP,1460)
+LE_HL_Mean<-mean(LE_HL_Roll)
+LE_HL_SD<-sd(LE_HL_Roll)
+HE_HL_Roll<-roll_sum(PPT_sub$High_MedElShape_OutPRCP,1460)
+HE_HL_Mean<-mean(HE_HL_Roll)
+HE_HL_SD<-sd(HE_HL_Roll)
+
+PPT<-PPT_in[PPT_in$Dates %in% as.Date(Dates),]
+PPT<-PPT[PPT$Dates>"2001-07-01",]
+PPT<-PPT[order(PPT$Dates),]
+Merged<-merge(PPT,Mortality,all.x=T,by="Dates")
+PPT<-PPT_in[PPT_in$Dates %in% as.Date(Dates),]
+PPT<-PPT[PPT$Dates>"1999-01-01",]
+PPT<-PPT[order(PPT$Dates),]
+
+SPI_DF=data.frame(Dates=(as.Date(PPT$Dates)[1460:6935]),
+                  HE_HL=(roll_sum(PPT$High_MedElShape_OutPRCP,1460)-HE_HL_Mean)/HE_HL_SD,
+                  LE_HL=(roll_sum(PPT$High_LowElShape_OutPRCP,1460)-LE_HL_Mean)/LE_HL_SD,
+                  LE_LL=(roll_sum(PPT$Low_LowElShape_OutPRCP,1460)-LE_LL_Mean)/LE_LL_SD,
+                  HE_LL=(roll_sum(PPT$Low_MedElShape_OutPRCP,1460)-ME_LL_Mean)/ME_LL_SD
+                  )
+
+```
+
+### Calculating the R2 for SPI 
+
+```{r}
+SPI_DF$Month<-month(SPI_DF$Dates)
+Drought<-SPI_DF
+byyear <- aggregate(cbind(LE_LL, LE_HL,HE_LL,HE_HL)~year(Dates),
+             data=Drought,FUN=mean)
+
+colnames(byyear)[1]<-c("Year")
+Merged_byyear<-merge(byyear,Mortality,all.x=T,by="Year")
+#Mortality$AllPerc*100
+#head(Merged_byyear)
+Merged_byyear$mean<-rowMeans(Merged_byyear[2:5])
+#plot(Merged_byyear$mean)
+summary(lm(Merged_byyear$AllPerc[5:15]~Merged_byyear$mean[5:15]))
+
+
+byyear2<-byyear[4:16,]
+Oneclim<-c(byyear2$HE_LL,byyear2$LE_LL,byyear2$HE_HL,byyear2$LE_HL)
+OneMortality<-c(dfPerc$HE_LL_m,dfPerc$LE_LL_m,dfPerc$HE_HL_m,dfPerc$LE_HL_m)
+
+summary(lm(OneMortality~Oneclim))
+
+Oneclim<-c(byyear2$HE_LL,byyear2$LE_LL,byyear2$HE_HL,byyear2$LE_HL)
+OneMortality<-c(dfPerc$HE_LL_m,dfPerc$LE_LL_m,dfPerc$HE_HL_m,dfPerc$LE_HL_m)
+plot(OneMortality~Oneclim)
+```
+
+
+#### Here is the figure used in the supplemental. 
+
+```{r,fig.height=20.0,fig.width=17.0}
+
+
+#par(mar=c(15,7,10,33),xpd=F)
+par(mfrow=c(4,1))
+
+#### Figure1 
+Merged<-merge(Delta_df,Mortality,all.x=T,by="Dates")
+Merged<-Merged[Merged$Dates>as.Date("2001-01-01"),]
+#rint(Merged)
+par(mar=c(10,15,10,15),xpd=F)
+
+plot(as.Date(Merged[1460:nrow(Merged),1],origin = "1970-01-01"),roll_sum(Merged$Low_LowElDelta-mean(Merged$Low_LowElDelta),1460),col=adjustcolor(Pal_1[1],alpha.f=.5),ylim=c(-1510,700),
+     cex.axis=2.8,cex.lab=2.5,type="l",lwd=3.0, ylab=NA,xlab=NA,yaxt="n",xaxt="n")
+axis.Date(1,at=seq(as.Date(Merged$Dates)[1460], as.Date(Merged$Dates)[6569],by="year"),line=1.5,font.axis=2,
+     font.lab=3.0,col=NA, cex.lab=4.0,cex.axis=5.0)
+title(main="A) 4-Year Lag P-ET ", cex.main=5.0,line=3.0)
+title(xlab="Year", cex.lab=5.0,line=6.5)
+axis(side = 2,line=1.5,font.axis=2,font.lab=3.5,col=NA, cex.lab=5.0,cex.axis=5.0)
+title(ylab="Drought Index", mgp=c(4,1,0),cex.lab=5.0,line=8.0)
+#points(as.Date(Merged[,1]),cumsum(Delta_df$Low_MedElDelta-mean(Delta_df_sub$Low_MedElDelta))/19)
+points((Merged[1460:nrow(Merged),1]),roll_sum(Merged$Low_MedElDelta-mean(Merged$Low_MedElDelta),1460),col=adjustcolor(Pal_1[5],alpha.f=.5),type="l",lwd=3.0)
+points((Merged[1460:nrow(Merged),1]),roll_sum(Merged$High_LowElDelta-mean(Merged$High_LowElDelta),1460),col=adjustcolor(Pal_1[3],alpha.f=.5),type="l",lwd=3.0)
+#points(as.Date(Merged[,1]),cumsum(Merged$High_MedElDelta-mean(Merged_sub$High_MedElDelta))/19,col=Pal_1[4])
+points((Merged[1460:nrow(Merged),1]),roll_sum(Merged$High_HighElDelta-mean(Merged$High_HighElDelta),1460),col=adjustcolor(Pal_1[4],alpha.f=.5),type="l",lwd=3.0)
+mylabel = bquote(italic(R)^2 == .(format( 0.3585, digits = 2)))
+text(x = as.Date(Merged$Dates)[2000], y = -1000, labels = mylabel,cex=4.0)
+
+par(new = T)
+plot(as.Date(Merged$Dates)[1460:6569],Merged$AllPerc[1460:6569]*100, 
+                       pch=16, axes=F, ylim=c(0,50),xlab=NA, 
+                       ylab=NA, cex=5.0,)
+  axis(side = 4,line=1.5,font.axis=2,font.lab=3.5,col=NA, cex.lab=5.0,cex.axis=5.0)
+  mtext(side = 4, line = 8.0,cex=3.0, 'Percent Mortality')
+par(xpd = T)
+
+
+#### Figure 2 
+
+#Interporl
+#png("Palmers.png", units="in", width=20.0, height=10.0, res=300)
+
+plot(as.Date(Merged_PDSI$Dates),Merged_PDSI$HE_HL,
+     col=adjustcolor(Pal_1[4],alpha.f=.5),ylim=c(-5,6),
+    cex.axis=2.8,cex.lab=2.5,type="l",lwd=3.0,cex.main=4.0,
+    ylab=NA,xlab=NA,yaxt="n",xaxt="n")
+axis.Date(1,at=seq(as.Date(Merged$Dates)[1460], as.Date(Merged$Dates)[6205],by="year"),line=1.5,font.axis=2,
+     font.lab=3.0,col=NA, cex.lab=4.0,cex.axis=5.0)
+title(main="B) Palmer's Drought Severity Index ", cex.main=5.0,line=3.0)
+title(xlab="Year", cex.lab=5.0,line=6.5)
+axis(side = 2,line=1.5,font.axis=2,font.lab=3.5,col=NA, cex.lab=5.0,cex.axis=5.0)
+title(ylab="Drought Index", mgp=c(4,1,0),cex.lab=5.0,line=8.0)
+
+#points(as.Date(together[,1]),cumsum(Delta_df$Low_MedElDelta-mean(Delta_df_sub$Low_MedElDelta))/19)
+points(as.Date(Merged_PDSI$Dates),Merged_PDSI$HE_LL,
+       col=adjustcolor(Pal_1[5],alpha.f=.5),type="l",lwd=3.0)
+points(as.Date(Merged_PDSI$Dates),Merged_PDSI$LE_HL,
+       col=adjustcolor(Pal_1[3],alpha.f=.5),type="l",lwd=3.0)
+#points(as.Date(together[,1]),cumsum(Delta_df$High_MedElDelta-mean(Delta_df_sub$High_MedElDelta))/19,col=Pal_1[4])
+points(as.Date(Merged_PDSI$Dates),Merged_PDSI$LE_LL,
+       col=adjustcolor(Pal_1[1],alpha.f=.5),type="l",lwd=3.0)
+mylabel = bquote(italic(R)^2 == .(format( 0.1349, digits = 2)))
+text(x = as.Date(Merged$Dates)[2000], y = 5.5, labels = mylabel,cex=4.0)
+#abline(v=as.Date("2013-07-01"),lty=2.0)
+#abline(v=as.Date("2014-07-01"),lty=3.0)
+#abline(v=as.Date("2015-07-01"),lty=4.0)
+#abline(v=as.Date("2016-07-01"),lty=5.0)
+par(new = T)
+plot(as.Date(Merged$Dates)[1460:6205],Merged$AllPerc[1460:6205]*100, 
+                       pch=16, axes=F, ylim=c(0,50),xlab=NA, 
+                       ylab=NA, cex=5.0,)
+  axis(side = 4,line=1.5,font.axis=2,font.lab=3.5,col=NA, cex.lab=5.0,cex.axis=5.0)
+  mtext(side = 4, line = 8.0,cex=3.0, 'Percent Mortality')
+par(xpd = T)
+
+
+
+### Number 3
+PPT<-PPT_in[PPT_in$Dates %in% as.Date(Dates),]
+PPT<-PPT[PPT$Dates>"2001-01-01",]
+PPT<-PPT[order(PPT$Dates),]
+Merged<-merge(PPT,Mortality,all.x=T,by="Dates")
+#plot(as.Date(Dates)[1460:6206],(roll_sum(PPT$Low_LowElShape_OutPRCP,1460)-LE_LL_Mean)/LE_LL_SD)
+
+plot(as.Date(Merged$Dates)[1460:6205],(roll_sum(Merged$High_HighElShape_OutPRCP,1460)-HE_HL_Mean)/HE_HL_SD,
+     col=adjustcolor(Pal_1[4],alpha.f=.5),ylim=c(-3,1),#xlim=c(as.Date(PPT$Dates)[3993],as.Date(PPT$Dates)[6935])
+       cex.axis=5.0,cex.lab=4.0,type="l",lwd=3.0,cex.main=7.0,ylab=NA,yaxt="n",xaxt="n",xlab=NA)
+#axis(side = 1,as.Date(Merged$Dates)[1460:6205],
+#     format(Merged$Dates[1460:6205], '%m-%d-%Y'),line=1.5,font.axis=2,
+#     font.lab=3.0,col=NA, cex.lab=4.0,cex.axis=5.0)
+axis.Date(1,at=seq(as.Date(Merged$Dates)[1460], as.Date(Merged$Dates)[6205],by="year"),line=1.5,font.axis=2,
+     font.lab=3.0,col=NA, cex.lab=4.0,cex.axis=5.0)
+title(main="C) 4-Year Lag SPI ", cex.main=5.0,line=3.0)
+title(xlab="Year", cex.lab=5.0,line=6.5)
+axis(side = 2,line=1.5,font.axis=2,font.lab=3.5,col=NA, cex.lab=5.0,cex.axis=5.0)
+title(ylab="Drought Index", mgp=c(4,1,0),cex.lab=5.0,line=8.0)
+points(as.Date(Merged$Dates)[1460:6205],(roll_sum(Merged$High_LowElShape_OutPRCP,1460)-LE_HL_Mean)/LE_HL_SD,
+       col=adjustcolor(Pal_1[3],alpha.f=.5),type="l",lwd=3.0)
+#points(as.Date(together[,1]),cumsum(Delta_df$Low_MedElDelta-mean(Delta_df_sub$Low_MedElDelta))/19)
+points(as.Date(Merged$Dates)[1460:6205],(roll_sum(Merged$Low_LowElShape_OutPRCP,1460)-LE_LL_Mean)/LE_LL_SD,
+       col=adjustcolor(Pal_1[1],alpha.f=.5),type="l",lwd=3.0)
+points(as.Date(Merged$Dates)[1460:6205],(roll_sum(Merged$Low_MedElShape_OutPRCP,1460)-ME_LL_Mean)/ME_LL_SD,
+       col=adjustcolor(Pal_1[5],alpha.f=.5),type="l",lwd=3.0)
+mylabel = bquote(italic(R)^2 == .(format(0.4184, digits = 2)))
+text(x = as.Date(Merged$Dates)[2000], y = -2, labels = mylabel,cex=4.0)
+
+par(new = T) 
+plot(as.Date(Merged$Dates)[1460:6205],Merged$AllPerc[1460:6205]*100, 
+                       pch=16, axes=F, ylim=c(0,50),xlab=NA, 
+                       ylab=NA, cex=5.0,)
+  axis(side = 4,line=1.5,font.axis=2,font.lab=3.5,col=NA, cex.lab=5.0,cex.axis=5.0)
+  mtext(side = 4, line = 8.0,cex=3.0, 'Percent Mortality')
+par(xpd = T)
+#legend(as.Date("2020-09-01"),50,legend=c("Low Elevation/Low Lat","High Elevation/Low Lat",
+ #                                             "Low Elevation/High Lat","High Elevation/High Lat",
+#                                              "Host Mortality %"),
+#         pch=c(16,16,16,16,16,NA),lty=c(NA,NA,NA,NA,NA,1),col=c(Pal_1[1],Pal_1[3],Pal_1[4],Pal_1[5],"black","black"),
+#         cex=2.0)
+
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend(x="top",inset=0,legend=c("Low Elevation/Low Lat","High Elevation/Low Lat",
+                                              "Low Elevation/High Lat","High Elevation/High Lat",
+                                              "Host Mortality %"),
+         pch=c(16,16,16,16,16,NA),lty=c(NA,NA,NA,NA,NA,1),col=c(Pal_1[1],Pal_1[5],Pal_1[3],Pal_1[4],"black","black"),
+         cex=4.0,bty=F,ncol=2)
+
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+
+
+
+### Current Drought Index
+
+Normalize P-ET to th emean for the period between 2001-2010
+Rollling Cumulative Drought
+
+```{r pressure, fig.width=20.0,fig.height=10.0}
+Delta_Shorter<-Delta_df[Delta_df$Dates>"2008-07-01",]
+Merged<-merge(Delta_Shorter,Mortality,all.x=T,by="Dates")
+
+#jpeg(filename='C:/Users/zjrobbin/Documents/GitHub/IMAP_Python_Project/Written Documentation/Presentation/MPB_Drought.jpeg',quality=100)
+together<-cbind(as.character(Delta_Shorter$Dates),Delta_Shorter$Low_MedElDelta)
+
+
+par(mar=c(5,5,5,33),xpd=F)
+plot(as.Date(together[,1]),cumsum(Delta_Shorter$Low_LowElDelta-mean(Delta_df_sub$Low_LowElDelta)),
+     col=Pal_1[1],ylim=c(-1500,1000),
+     ylab="Drought Index",xlab="Year",cex.axis=2.0,cex.lab=2.0,cex.main=2.0,type="l",lwd=3.0,
+     main="P-ET WPB Study Sites")
+#points(as.Date(together[,1]),cumsum(Delta_df$Low_MedElDelta-mean(Delta_df_sub$Low_MedElDelta))/19)
+points(as.Date(together[,1]),cumsum(Delta_Shorter$Low_HighElDelta-mean(Delta_df_sub$Low_HighElDelta)),
+       col=Pal_1[3],type="l",lwd=3.0)
+points(as.Date(together[,1]),cumsum(Delta_Shorter$High_LowElDelta-mean(Delta_df_sub$High_LowElDelta)),
+       col=Pal_1[4],type="l",lwd=3.0)
+#points(as.Date(together[,1]),cumsum(Delta_df$High_MedElDelta-mean(Delta_df_sub$High_MedElDelta))/19,col=Pal_1[4])
+points(as.Date(together[,1]),cumsum(Delta_Shorter$High_HighElDelta-mean(Delta_df_sub$High_HighElDelta)),
+       col=Pal_1[5],type="l",lwd=3.0)
+abline(h=0)
+
+abline(v=as.Date("2013-07-01"),lty=2.0)
+abline(v=as.Date("2014-07-01"),lty=3.0)
+abline(v=as.Date("2015-07-01"),lty=4.0)
+abline(v=as.Date("2016-07-01"),lty=5.0)
+par(new = T)
+with(d=Merged, plot(as.Date(Merged$Dates),-Merged$LargePerc*100, 
+                       pch=16, axes=F, ylim=c(-50,0.1),xlab=NA, 
+                       ylab=NA, cex=2.0))
+  axis(side = 4,font.axis=2,font.lab=2,cex.lab=2.0,cex.axis=2.0)
+  mtext(side = 4, line = 3,cex=2.0, '-Percent Mortality')
+par(xpd = T)
+legend(as.Date("2019-06-01"),-20,legend=c("Low Elevation/Low Lat","High Elevation/Low Lat",
+                                              "Low Elevation/High Lat","High Elevation/High Lat",
+                                              "Beetle Mortality %","July of a given Year"),
+         pch=c(16,16,16,16,16,NA),lty=c(NA,NA,NA,NA,NA,1),col=c(Pal_1[1],Pal_1[3],Pal_1[4],Pal_1[5],"black","black"),
+         cex=2.0)
+#?mtext()
+
+
+```
+
+#### Testing other year combinations
+
+Here is an example with a Five Year Lag for P-ET, this can be used to change the rolling sum to test mulitple differnt lags. 
+
+
+```{r, fig.width=20.0,fig.height=10.0}
+Delta_Shorter<-Delta_df[Delta_df$Dates>"2003-01-01",]
+Merged<-merge(Delta_Shorter,Mortality,all.x=T,by="Dates")
+Merged<-Merged[Merged$Dates>"2008-01-01",]
+#jpeg(filename='C:/Users/zjrobbin/Documents/GitHub/IMAP_Python_Project/Written Documentation/Presentation/MPB_Drought.jpeg',quality=100)
+together<-cbind(as.character(Delta_Shorter$Dates),Delta_Shorter$Low_MedElDelta)
+
+nrow(together)
+par(mar=c(5,5,5,33),xpd=F)
+plot(as.Date(together[1825:5839,1]),roll_sum((Delta_Shorter$Low_LowElDelta-mean(Delta_df_sub$Low_LowElDelta)),1825),
+     col=Pal_1[1],ylim=c(-1500,1000),
+     ylab="Drought Index",xlab="Year",cex.axis=2.0,cex.lab=2.0,cex.main=2.0,type="l",lwd=3.0,
+     main="Five Year Lag Index WPB Study Sites")
+#points(as.Date(together[,1]),cumsum(Delta_df$Low_MedElDelta-mean(Delta_df_sub$Low_MedElDelta))/19)
+points(as.Date(together[1825:5839,1]),roll_sum((Delta_Shorter$Low_HighElDelta-mean(Delta_df_sub$Low_HighElDelta)),1825),
+       col=Pal_1[3],type="l",lwd=3.0)
+points(as.Date(together[1825:5839,1]),roll_sum((Delta_Shorter$High_LowElDelta-mean(Delta_df_sub$High_LowElDelta)),1825),
+       col=Pal_1[4],type="l",lwd=3.0)
+#points(as.Date(together[,1]),cumsum(Delta_df$High_MedElDelta-mean(Delta_df_sub$High_MedElDelta))/19,col=Pal_1[4])
+points(as.Date(together[1825:5839,1]),roll_sum((Delta_Shorter$High_HighElDelta-mean(Delta_df_sub$High_HighElDelta)),1825),
+       col=Pal_1[5],type="l",lwd=3.0)
+abline(h=0)
+
+abline(v=as.Date("2013-07-01"),lty=2.0)
+abline(v=as.Date("2014-07-01"),lty=3.0)
+abline(v=as.Date("2015-07-01"),lty=4.0)
+abline(v=as.Date("2016-07-01"),lty=5.0)
+par(new = T)
+with(d=Merged, plot(as.Date(Merged$Dates),-Merged$LargePerc*100, 
+                       pch=16, axes=F, ylim=c(-50,0),xlab=NA, 
+                       ylab=NA, cex=2.0))
+  axis(side = 4,font.axis=2,font.lab=2,cex.lab=2.0,cex.axis=2.0)
+  mtext(side = 4, line = 3,cex=2.0, '-Percent Mortality')
+par(xpd = T)
+legend(as.Date("2019-09-01"),-30,legend=c("Low Elevation/Low Lat","High Elevation/Low Lat",
+                                              "Low Elevation/High Lat","High Elevation/High Lat",
+                                              "Beetle Mortality %","July of a given Year"),
+         pch=c(16,16,16,16,16,NA),lty=c(NA,NA,NA,NA,NA,1),col=c(Pal_1[1],Pal_1[3],Pal_1[4],Pal_1[5],"black","black"),
+         cex=2.0)
+```
+
