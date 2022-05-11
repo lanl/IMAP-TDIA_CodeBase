@@ -41,7 +41,7 @@ Created on Mon Nov 25 17:02:25 2019
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 ########################End#########################################################
 
-IMAP-TDIA Code Base Zachary Robbins and Chonggang Xu
+#IMAP-TDIA Code Base Zachary Robbins and Chonggang Xu
 
 
 
